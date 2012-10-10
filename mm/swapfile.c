@@ -99,7 +99,7 @@ __try_to_reclaim_swap(struct swap_info_struct *si, unsigned long offset)
 	struct page *page;
 	int ret = 0;
 
-	page = find_get_page(swap_address_space(entry), entry.val);
+	page = find_get_page(&swapper_space, entry.val);
 	if (!page)
 		return 0;
 	/*
@@ -411,7 +411,7 @@ scan:
 		}
 	}
 	offset = si->lowest_bit;
-	while (offset < scan_base) {
+	while (++offset < scan_base) {
 		if (!si->swap_map[offset]) {
 			spin_lock(&si->lock);
 			goto checks;
@@ -425,7 +425,6 @@ scan:
 			cond_resched();
 			latency_ration = LATENCY_LIMIT;
 		}
-		offset++;
 	}
 	spin_lock(&si->lock);
 
@@ -674,7 +673,7 @@ void swapcache_free(swp_entry_t entry, struct page *page)
  * This does not give an exact answer when swap count is continued,
  * but does include the high COUNT_CONTINUED flag to allow for that.
  */
-static inline int page_swapcount(struct page *page)
+int page_swapcount(struct page *page)
 {
 	int count = 0;
 	struct swap_info_struct *p;
@@ -766,8 +765,7 @@ int free_swap_and_cache(swp_entry_t entry)
 	p = swap_info_get(entry);
 	if (p) {
 		if (swap_entry_free(p, entry, 1) == SWAP_HAS_CACHE) {
-			page = find_get_page(swap_address_space(entry),
-						entry.val);
+			page = find_get_page(&swapper_space, entry.val);
 			if (page && !trylock_page(page)) {
 				page_cache_release(page);
 				page = NULL;
@@ -791,6 +789,37 @@ int free_swap_and_cache(swp_entry_t entry)
 	}
 	return p != NULL;
 }
+
+#ifdef CONFIG_CGROUP_MEM_RES_CTLR
+/**
+ * mem_cgroup_count_swap_user - count the user of a swap entry
+ * @ent: the swap entry to be checked
+ * @pagep: the pointer for the swap cache page of the entry to be stored
+ *
+ * Returns the number of the user of the swap entry. The number is valid only
+ * for swaps of anonymous pages.
+ * If the entry is found on swap cache, the page is stored to pagep with
+ * refcount of it being incremented.
+ */
+int mem_cgroup_count_swap_user(swp_entry_t ent, struct page **pagep)
+{
+	struct page *page;
+	struct swap_info_struct *p;
+	int count = 0;
+
+	page = find_get_page(&swapper_space, ent.val);
+	if (page)
+		count += page_mapcount(page);
+	p = swap_info_get(ent);
+	if (p) {
+		count += swap_count(p->swap_map[swp_offset(ent)]);
+		spin_unlock(&p->lock);
+	}
+
+	*pagep = page;
+	return count;
+}
+#endif
 
 #ifdef CONFIG_HIBERNATION
 /*
@@ -1599,8 +1628,7 @@ SYSCALL_DEFINE1(swapoff, const char __user *, specialfile)
 	struct file *swap_file, *victim;
 	struct address_space *mapping;
 	struct inode *inode;
-	char *pathname;
-	short oom_score_adj;
+	struct filename *pathname;
 	int i, type, prev;
 	int err;
 
@@ -1614,8 +1642,7 @@ SYSCALL_DEFINE1(swapoff, const char __user *, specialfile)
 	if (IS_ERR(pathname))
 		goto out;
 
-	victim = filp_open(pathname, O_RDWR|O_LARGEFILE, 0);
-	putname(pathname);
+	victim = filp_open(pathname->name, O_RDWR|O_LARGEFILE, 0);
 	err = PTR_ERR(victim);
 	if (IS_ERR(victim))
 		goto out;
@@ -1663,9 +1690,9 @@ SYSCALL_DEFINE1(swapoff, const char __user *, specialfile)
 	spin_unlock(&p->lock);
 	spin_unlock(&swap_lock);
 
-	oom_score_adj = test_set_oom_score_adj(OOM_SCORE_ADJ_MAX);
+	set_current_oom_origin();
 	err = try_to_unuse(type);
-	compare_swap_oom_score_adj(OOM_SCORE_ADJ_MAX, oom_score_adj);
+	clear_current_oom_origin();
 
 	if (err) {
 		/*
@@ -2057,7 +2084,7 @@ static int setup_swap_map_and_extents(struct swap_info_struct *p,
 SYSCALL_DEFINE2(swapon, const char __user *, specialfile, int, swap_flags)
 {
 	struct swap_info_struct *p;
-	char *name;
+	struct filename *name;
 	struct file *swap_file = NULL;
 	struct address_space *mapping;
 	int i;
@@ -2087,7 +2114,7 @@ SYSCALL_DEFINE2(swapon, const char __user *, specialfile, int, swap_flags)
 		name = NULL;
 		goto bad_swap;
 	}
-	swap_file = filp_open(name, O_RDWR|O_LARGEFILE, 0);
+	swap_file = filp_open(name->name, O_RDWR|O_LARGEFILE, 0);
 	if (IS_ERR(swap_file)) {
 		error = PTR_ERR(swap_file);
 		swap_file = NULL;
@@ -2159,7 +2186,6 @@ SYSCALL_DEFINE2(swapon, const char __user *, specialfile, int, swap_flags)
 		}
 		if ((swap_flags & SWAP_FLAG_DISCARD) && discard_swap(p) == 0)
 			p->flags |= SWP_DISCARDABLE;
-
 	}
 
 	if (p->bdev && blk_queue_fast(bdev_get_queue(p->bdev)))
@@ -2174,7 +2200,7 @@ SYSCALL_DEFINE2(swapon, const char __user *, specialfile, int, swap_flags)
 
 	printk(KERN_INFO "Adding %uk swap on %s.  "
 			"Priority:%d extents:%d across:%lluk %s%s\n",
-		p->pages<<(PAGE_SHIFT-10), name, p->prio,
+		p->pages<<(PAGE_SHIFT-10), name->name, p->prio,
 		nr_extents, (unsigned long long)span<<(PAGE_SHIFT-10),
 		(p->flags & SWP_SOLIDSTATE) ? "SS" : "",
 		(p->flags & SWP_DISCARDABLE) ? "D" : "");
