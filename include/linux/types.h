@@ -175,6 +175,10 @@ typedef u32 dma_addr_t;
 #define __bitwise
 #endif
 
+typedef unsigned __bitwise__ gfp_t;
+typedef unsigned __bitwise__ fmode_t;
+typedef unsigned __bitwise__ oom_flags_t;
+
 typedef __u16 __bitwise __le16;
 typedef __u16 __bitwise __be16;
 typedef __u32 __bitwise __le32;
