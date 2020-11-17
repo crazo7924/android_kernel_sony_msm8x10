@@ -141,6 +141,8 @@ unsigned long
 isolate_migratepages_range(struct zone *zone, struct compact_control *cc,
 	unsigned long low_pfn, unsigned long end_pfn, bool unevictable);
 
+int find_suitable_fallback(struct free_area *area, unsigned int order,
+	int migratetype, bool only_stealable, bool *can_steal);
 #endif
 
 /*
@@ -226,8 +228,10 @@ static inline void mlock_migrate_page(struct page *newpage, struct page *page)
 	}
 }
 
+#ifdef CONFIG_TRANSPARENT_HUGEPAGE
 extern unsigned long vma_address(struct page *page,
 				 struct vm_area_struct *vma);
+#endif
 #else /* !CONFIG_MMU */
 static inline int is_mlocked_vma(struct vm_area_struct *v, struct page *p)
 {

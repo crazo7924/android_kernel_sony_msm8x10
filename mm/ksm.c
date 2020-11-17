@@ -36,7 +36,6 @@
 #include <linux/hash.h>
 #include <linux/freezer.h>
 #include <linux/oom.h>
-#include <linux/show_mem_notifier.h>
 
 #include <asm/tlbflush.h>
 #include "internal.h"
@@ -205,20 +204,6 @@ static DEFINE_SPINLOCK(ksm_mmlist_lock);
 #define KSM_KMEM_CACHE(__struct, __flags) kmem_cache_create("ksm_"#__struct,\
 		sizeof(struct __struct), __alignof__(struct __struct),\
 		(__flags), NULL)
-
-static int ksm_show_mem_notifier(struct notifier_block *nb,
-				unsigned long action,
-				void *data)
-{
-	pr_info("ksm_pages_sharing: %lu\n", ksm_pages_sharing);
-	pr_info("ksm_pages_shared: %lu\n", ksm_pages_shared);
-
-	return 0;
-}
-
-static struct notifier_block ksm_show_mem_notifier_block = {
-	.notifier_call = ksm_show_mem_notifier,
-};
 
 static int __init ksm_slab_init(void)
 {
@@ -1670,7 +1655,7 @@ again:
 		struct anon_vma_chain *vmac;
 		struct vm_area_struct *vma;
 
-		anon_vma_lock(anon_vma);
+		anon_vma_lock_read(anon_vma);
 		list_for_each_entry(vmac, &anon_vma->head, same_anon_vma) {
 			vma = vmac->vma;
 			if (rmap_item->address < vma->vm_start ||
@@ -1693,7 +1678,7 @@ again:
 			if (!search_new_forks || !mapcount)
 				break;
 		}
-		anon_vma_unlock(anon_vma);
+		anon_vma_unlock_read(anon_vma);
 		if (!mapcount)
 			goto out;
 	}
@@ -1703,8 +1688,7 @@ out:
 	return referenced;
 }
 
-int try_to_unmap_ksm(struct page *page, enum ttu_flags flags,
-			struct vm_area_struct *target_vma)
+int try_to_unmap_ksm(struct page *page, enum ttu_flags flags)
 {
 	struct stable_node *stable_node;
 	struct hlist_node *hlist;
@@ -1718,19 +1702,13 @@ int try_to_unmap_ksm(struct page *page, enum ttu_flags flags,
 	stable_node = page_stable_node(page);
 	if (!stable_node)
 		return SWAP_FAIL;
-
-	if (target_vma) {
-		unsigned long address = vma_address(page, target_vma);
-		ret = try_to_unmap_one(page, target_vma, address, flags);
-		goto out;
-	}
 again:
 	hlist_for_each_entry(rmap_item, hlist, &stable_node->hlist, hlist) {
 		struct anon_vma *anon_vma = rmap_item->anon_vma;
 		struct anon_vma_chain *vmac;
 		struct vm_area_struct *vma;
 
-		anon_vma_lock(anon_vma);
+		anon_vma_lock_read(anon_vma);
 		list_for_each_entry(vmac, &anon_vma->head, same_anon_vma) {
 			vma = vmac->vma;
 			if (rmap_item->address < vma->vm_start ||
@@ -1748,11 +1726,11 @@ again:
 			ret = try_to_unmap_one(page, vma,
 					rmap_item->address, flags);
 			if (ret != SWAP_AGAIN || !page_mapped(page)) {
-				anon_vma_unlock(anon_vma);
+				anon_vma_unlock_read(anon_vma);
 				goto out;
 			}
 		}
-		anon_vma_unlock(anon_vma);
+		anon_vma_unlock_read(anon_vma);
 	}
 	if (!search_new_forks++)
 		goto again;
@@ -1782,7 +1760,7 @@ again:
 		struct anon_vma_chain *vmac;
 		struct vm_area_struct *vma;
 
-		anon_vma_lock(anon_vma);
+		anon_vma_lock_read(anon_vma);
 		list_for_each_entry(vmac, &anon_vma->head, same_anon_vma) {
 			vma = vmac->vma;
 			if (rmap_item->address < vma->vm_start ||
@@ -1799,11 +1777,11 @@ again:
 
 			ret = rmap_one(page, vma, rmap_item->address, arg);
 			if (ret != SWAP_AGAIN) {
-				anon_vma_unlock(anon_vma);
+				anon_vma_unlock_read(anon_vma);
 				goto out;
 			}
 		}
-		anon_vma_unlock(anon_vma);
+		anon_vma_unlock_read(anon_vma);
 	}
 	if (!search_new_forks++)
 		goto again;
@@ -1969,12 +1947,9 @@ static ssize_t run_store(struct kobject *kobj, struct kobj_attribute *attr,
 	if (ksm_run != flags) {
 		ksm_run = flags;
 		if (flags & KSM_RUN_UNMERGE) {
-			short oom_score_adj;
-
-			oom_score_adj = test_set_oom_score_adj(OOM_SCORE_ADJ_MAX);
+			set_current_oom_origin();
 			err = unmerge_and_remove_all_rmap_items();
-			compare_swap_oom_score_adj(OOM_SCORE_ADJ_MAX,
-								oom_score_adj);
+			clear_current_oom_origin();
 			if (err) {
 				ksm_run = KSM_RUN_STOP;
 				count = err;
@@ -2109,8 +2084,6 @@ static int __init ksm_init(void)
 	 */
 	hotplug_memory_notifier(ksm_memory_callback, 100);
 #endif
-
-	show_mem_notifier_register(&ksm_show_mem_notifier_block);
 	return 0;
 
 out_free:

@@ -4,9 +4,6 @@
 #include <linux/export.h>
 #include <linux/err.h>
 #include <linux/sched.h>
-#include <linux/security.h>
-#include <linux/swap.h>
-#include <linux/swapops.h>
 #include <linux/vmalloc.h>
 #include <asm/uaccess.h>
 
@@ -266,14 +263,17 @@ pid_t vm_is_stack(struct task_struct *task,
 
 	if (in_group) {
 		struct task_struct *t;
-
 		rcu_read_lock();
-		for_each_thread(task, t) {
+		if (!pid_alive(task))
+			goto done;
+
+		t = task;
+		do {
 			if (vm_is_stack_for_task(t, vma)) {
 				ret = t->pid;
 				goto done;
 			}
-		}
+		} while_each_thread(task, t);
 done:
 		rcu_read_unlock();
 	}
@@ -286,6 +286,7 @@ void arch_pick_mmap_layout(struct mm_struct *mm)
 {
 	mm->mmap_base = TASK_UNMAPPED_BASE;
 	mm->get_unmapped_area = arch_get_unmapped_area;
+	mm->unmap_area = arch_unmap_area;
 }
 #endif
 
@@ -349,24 +350,6 @@ void kvfree(const void *addr)
 		kfree(addr);
 }
 EXPORT_SYMBOL(kvfree);
-
-struct address_space *page_mapping(struct page *page)
-{
-	struct address_space *mapping = page->mapping;
-
-	VM_BUG_ON(PageSlab(page));
-#ifdef CONFIG_SWAP
-	if (unlikely(PageSwapCache(page))) {
-		swp_entry_t entry;
-
-		entry.val = page_private(page);
-		mapping = swap_address_space(entry);
-	} else
-#endif
-	if ((unsigned long)mapping & PAGE_MAPPING_ANON)
-		mapping = NULL;
-	return mapping;
-}
 
 /* Tracepoints definitions. */
 EXPORT_TRACEPOINT_SYMBOL(kmalloc);

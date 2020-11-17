@@ -1300,8 +1300,6 @@ static struct page *allocate_slab(struct kmem_cache *s, gfp_t flags, int node)
 	 * so we fall-back to the minimum order allocation.
 	 */
 	alloc_gfp = (flags | __GFP_NOWARN | __GFP_NORETRY) & ~__GFP_NOFAIL;
-	if ((alloc_gfp & __GFP_WAIT) && oo_order(oo) > oo_order(s->min))
-		alloc_gfp = (alloc_gfp | __GFP_NOMEMALLOC) & ~__GFP_WAIT;
 
 	page = alloc_slab_page(alloc_gfp, node, oo);
 	if (unlikely(!page)) {
@@ -1565,6 +1563,7 @@ static void *get_partial_node(struct kmem_cache *s,
 
 		if (!object) {
 			c->page = page;
+			c->node = page_to_nid(page);
 			stat(s, ALLOC_FROM_PARTIAL);
 			object = t;
 			available =  page->objects - page->inuse;
@@ -1583,7 +1582,7 @@ static void *get_partial_node(struct kmem_cache *s,
 /*
  * Get a page from somewhere. Search in increasing NUMA distances.
  */
-static void *get_any_partial(struct kmem_cache *s, gfp_t flags,
+static struct page *get_any_partial(struct kmem_cache *s, gfp_t flags,
 		struct kmem_cache_cpu *c)
 {
 #ifdef CONFIG_NUMA
@@ -2039,7 +2038,7 @@ static void flush_all(struct kmem_cache *s)
 static inline int node_match(struct kmem_cache_cpu *c, int node)
 {
 #ifdef CONFIG_NUMA
-	if (node != NUMA_NO_NODE && page_to_nid(c->page) != node)
+	if (node != NUMA_NO_NODE && c->node != node)
 		return 0;
 #endif
 	return 1;
@@ -2128,6 +2127,7 @@ static inline void *new_slab_objects(struct kmem_cache *s, gfp_t flags,
 		page->freelist = NULL;
 
 		stat(s, ALLOC_SLAB);
+		c->node = page_to_nid(page);
 		c->page = page;
 		*pc = c;
 	} else
@@ -2236,6 +2236,7 @@ new_slab:
 	if (c->partial) {
 		c->page = c->partial;
 		c->partial = c->page->next;
+		c->node = page_to_nid(c->page);
 		stat(s, CPU_PARTIAL_ALLOC);
 		c->freelist = NULL;
 		goto redo;
@@ -2266,6 +2267,7 @@ new_slab:
 
 	c->freelist = get_freepointer(s, object);
 	deactivate_slab(s, c);
+	c->node = NUMA_NO_NODE;
 	local_irq_restore(flags);
 	return object;
 }
@@ -2613,7 +2615,7 @@ EXPORT_SYMBOL(kmem_cache_free);
  * take the list_lock.
  */
 static int slub_min_order;
-static int slub_max_order;
+static int slub_max_order = PAGE_ALLOC_COSTLY_ORDER;
 static int slub_min_objects;
 
 /*
@@ -4484,25 +4486,25 @@ static ssize_t show_slab_objects(struct kmem_cache *s,
 
 		for_each_possible_cpu(cpu) {
 			struct kmem_cache_cpu *c = per_cpu_ptr(s->cpu_slab, cpu);
-			int node;
+			int node = ACCESS_ONCE(c->node);
 			struct page *page;
 
-			page = ACCESS_ONCE(c->page);
-			if (!page)
+			if (node < 0)
 				continue;
+			page = ACCESS_ONCE(c->page);
+			if (page) {
+				if (flags & SO_TOTAL)
+					x = page->objects;
+				else if (flags & SO_OBJECTS)
+					x = page->inuse;
+				else
+					x = 1;
 
-			node = page_to_nid(page);
-			if (flags & SO_TOTAL)
-				x = page->objects;
-			else if (flags & SO_OBJECTS)
-				x = page->inuse;
-			else
-				x = 1;
+				total += x;
+				nodes[node] += x;
+			}
+			page = c->partial;
 
-			total += x;
-			nodes[node] += x;
-
-			page = ACCESS_ONCE(c->partial);
 			if (page) {
 				node = page_to_nid(page);
 				if (flags & SO_TOTAL)
@@ -4514,7 +4516,6 @@ static ssize_t show_slab_objects(struct kmem_cache *s,
 				total += x;
 				nodes[node] += x;
 			}
-
 			per_cpu[node]++;
 		}
 	}
