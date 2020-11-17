@@ -1139,7 +1139,7 @@ struct ring_buffer *__ring_buffer_alloc(unsigned long size, unsigned flags,
 	 * In that off case, we need to allocate for all possible cpus.
 	 */
 #ifdef CONFIG_HOTPLUG_CPU
-	cpu_notifier_register_begin();
+	get_online_cpus();
 	cpumask_copy(buffer->cpumask, cpu_online_mask);
 #else
 	cpumask_copy(buffer->cpumask, cpu_possible_mask);
@@ -1162,10 +1162,10 @@ struct ring_buffer *__ring_buffer_alloc(unsigned long size, unsigned flags,
 #ifdef CONFIG_HOTPLUG_CPU
 	buffer->cpu_notify.notifier_call = rb_cpu_notify;
 	buffer->cpu_notify.priority = 0;
-	__register_cpu_notifier(&buffer->cpu_notify);
-	cpu_notifier_register_done();
+	register_cpu_notifier(&buffer->cpu_notify);
 #endif
 
+	put_online_cpus();
 	mutex_init(&buffer->mutex);
 
 	return buffer;
@@ -1179,9 +1179,7 @@ struct ring_buffer *__ring_buffer_alloc(unsigned long size, unsigned flags,
 
  fail_free_cpumask:
 	free_cpumask_var(buffer->cpumask);
-#ifdef CONFIG_HOTPLUG_CPU
-	cpu_notifier_register_done();
-#endif
+	put_online_cpus();
 
  fail_free_buffer:
 	kfree(buffer);
@@ -1198,17 +1196,16 @@ ring_buffer_free(struct ring_buffer *buffer)
 {
 	int cpu;
 
+	get_online_cpus();
+
 #ifdef CONFIG_HOTPLUG_CPU
-	cpu_notifier_register_begin();
-	__unregister_cpu_notifier(&buffer->cpu_notify);
+	unregister_cpu_notifier(&buffer->cpu_notify);
 #endif
 
 	for_each_buffer_cpu(buffer, cpu)
 		rb_free_cpu_buffer(buffer->buffers[cpu]);
 
-#ifdef CONFIG_HOTPLUG_CPU
-	cpu_notifier_register_done();
-#endif
+	put_online_cpus();
 
 	kfree(buffer->buffers);
 	free_cpumask_var(buffer->cpumask);
@@ -1303,13 +1300,14 @@ int ring_buffer_resize(struct ring_buffer *buffer, unsigned long size)
 	if (!buffer)
 		return size;
 
-	size = DIV_ROUND_UP(size, BUF_PAGE_SIZE);
-	size *= BUF_PAGE_SIZE;
+	nr_pages = DIV_ROUND_UP(size, BUF_PAGE_SIZE);
 	buffer_size = buffer->pages * BUF_PAGE_SIZE;
 
 	/* we need a minimum of two pages */
-	if (size < BUF_PAGE_SIZE * 2)
-		size = BUF_PAGE_SIZE * 2;
+	if (nr_pages < 2)
+		nr_pages = 2;
+
+	size = nr_pages * BUF_PAGE_SIZE;
 
 	if (size == buffer_size)
 		return size;
@@ -1321,8 +1319,6 @@ int ring_buffer_resize(struct ring_buffer *buffer, unsigned long size)
 
 	mutex_lock(&buffer->mutex);
 	get_online_cpus();
-
-	nr_pages = DIV_ROUND_UP(size, BUF_PAGE_SIZE);
 
 	if (size < buffer_size) {
 

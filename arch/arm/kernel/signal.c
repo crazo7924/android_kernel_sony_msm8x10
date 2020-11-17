@@ -21,6 +21,7 @@
 #include <asm/ucontext.h>
 #include <asm/unistd.h>
 #include <asm/vfp.h>
+#include "signal.h"
 
 #define _BLOCKABLE (~(sigmask(SIGKILL) | sigmask(SIGSTOP)))
 
@@ -29,6 +30,7 @@
  */
 #define SWI_SYS_SIGRETURN	(0xef000000|(__NR_sigreturn)|(__NR_OABI_SYSCALL_BASE))
 #define SWI_SYS_RT_SIGRETURN	(0xef000000|(__NR_rt_sigreturn)|(__NR_OABI_SYSCALL_BASE))
+#define SWI_SYS_RESTART		(0xef000000|__NR_restart_syscall|__NR_OABI_SYSCALL_BASE)
 
 /*
  * With EABI, the syscall number has to be loaded into r7.
@@ -46,6 +48,18 @@
 static const unsigned long sigreturn_codes[7] = {
 	MOV_R7_NR_SIGRETURN,    SWI_SYS_SIGRETURN,    SWI_THUMB_SIGRETURN,
 	MOV_R7_NR_RT_SIGRETURN, SWI_SYS_RT_SIGRETURN, SWI_THUMB_RT_SIGRETURN,
+};
+
+/*
+ * Either we support OABI only, or we have EABI with the OABI
+ * compat layer enabled.  In the later case we don't know if
+ * user space is EABI or not, and if not we must not clobber r7.
+ * Always using the OABI syscall solves that issue and works for
+ * all those cases.
+ */
+const unsigned long syscall_restart_code[2] = {
+	SWI_SYS_RESTART,	/* swi	__NR_restart_syscall */
+	0xe49df004,		/* ldr	pc, [sp], #4 */
 };
 
 /*
@@ -78,10 +92,10 @@ sys_sigaction(int sig, const struct old_sigaction __user *act,
 		old_sigset_t mask;
 		if (!access_ok(VERIFY_READ, act, sizeof(*act)) ||
 		    __get_user(new_ka.sa.sa_handler, &act->sa_handler) ||
-		    __get_user(new_ka.sa.sa_restorer, &act->sa_restorer) ||
-		    __get_user(new_ka.sa.sa_flags, &act->sa_flags) ||
-		    __get_user(mask, &act->sa_mask))
+		    __get_user(new_ka.sa.sa_restorer, &act->sa_restorer))
 			return -EFAULT;
+		__get_user(new_ka.sa.sa_flags, &act->sa_flags);
+		__get_user(mask, &act->sa_mask);
 		siginitset(&new_ka.sa.sa_mask, mask);
 	}
 
@@ -90,10 +104,10 @@ sys_sigaction(int sig, const struct old_sigaction __user *act,
 	if (!ret && oact) {
 		if (!access_ok(VERIFY_WRITE, oact, sizeof(*oact)) ||
 		    __put_user(old_ka.sa.sa_handler, &oact->sa_handler) ||
-		    __put_user(old_ka.sa.sa_restorer, &oact->sa_restorer) ||
-		    __put_user(old_ka.sa.sa_flags, &oact->sa_flags) ||
-		    __put_user(old_ka.sa.sa_mask.sig[0], &oact->sa_mask))
+		    __put_user(old_ka.sa.sa_restorer, &oact->sa_restorer))
 			return -EFAULT;
+		__put_user(old_ka.sa.sa_flags, &oact->sa_flags);
+		__put_user(old_ka.sa.sa_mask.sig[0], &oact->sa_mask);
 	}
 
 	return ret;
@@ -616,6 +630,15 @@ static void do_signal(struct pt_regs *regs, int syscall)
 	int signr;
 
 	/*
+	 * We want the common case to go fast, which
+	 * is why we may in certain cases get here from
+	 * kernel mode. Just return without doing anything
+	 * if so.
+	 */
+	if (!user_mode(regs))
+		return;
+
+	/*
 	 * If we were from a system call, check for system call restarting...
 	 */
 	if (syscall) {
@@ -702,28 +725,17 @@ static void do_signal(struct pt_regs *regs, int syscall)
 }
 
 asmlinkage void
-do_work_pending(struct pt_regs *regs, unsigned int thread_flags, int syscall)
+do_notify_resume(struct pt_regs *regs, unsigned int thread_flags, int syscall)
 {
-	do {
-		if (likely(thread_flags & _TIF_NEED_RESCHED)) {
-			schedule();
-		} else {
-			if (unlikely(!user_mode(regs)))
-				return;
-			local_irq_enable();
-			if (thread_flags & _TIF_SIGPENDING) {
-				do_signal(regs, syscall);
-				syscall = 0;
-			} else {
-				clear_thread_flag(TIF_NOTIFY_RESUME);
-				tracehook_notify_resume(regs);
-				if (current->replacement_session_keyring)
-					key_replace_session_keyring();
-			}
-		}
-		local_irq_disable();
-		thread_flags = current_thread_info()->flags;
-	} while (thread_flags & _TIF_WORK_MASK);
+	if (thread_flags & _TIF_SIGPENDING)
+		do_signal(regs, syscall);
+
+	if (thread_flags & _TIF_NOTIFY_RESUME) {
+		clear_thread_flag(TIF_NOTIFY_RESUME);
+		tracehook_notify_resume(regs);
+		if (current->replacement_session_keyring)
+			key_replace_session_keyring();
+	}
 }
 
 struct page *get_signal_page(void)
