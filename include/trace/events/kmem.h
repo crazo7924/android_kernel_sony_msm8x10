@@ -1,3 +1,8 @@
+/*  NOTE: This file has been modified by Sony Mobile Communications Inc.
+ *  Modifications are Copyright (c) 2015 Sony Mobile Communications Inc,
+ *  and licensed under the license of the file.
+ */
+
 #undef TRACE_SYSTEM
 #define TRACE_SYSTEM kmem
 
@@ -191,6 +196,34 @@ TRACE_EVENT(mm_page_free_batched,
 			__entry->cold)
 );
 
+TRACE_EVENT(mm_page_alloc_highorder,
+
+	TP_PROTO(struct page *page, unsigned int order,
+			gfp_t gfp_flags, int migratetype),
+
+	TP_ARGS(page, order, gfp_flags, migratetype),
+
+	TP_STRUCT__entry(__field(struct page *, page)
+		__field(unsigned int, order)
+		__field(gfp_t, gfp_flags)
+		__field(int, migratetype)
+	),
+
+	TP_fast_assign(
+		__entry->page		= page;
+		__entry->order		= order;
+		__entry->gfp_flags	= gfp_flags;
+		__entry->migratetype	= migratetype;
+	),
+
+	TP_printk("page=%p pfn=%lu order=%d migratetype=%d gfp_flags=%s",
+		__entry->page,
+		page_to_pfn(__entry->page),
+		__entry->order,
+		__entry->migratetype,
+		show_gfp_flags(__entry->gfp_flags))
+);
+
 TRACE_EVENT(mm_page_alloc,
 
 	TP_PROTO(struct page *page, unsigned int order,
@@ -264,11 +297,30 @@ DEFINE_EVENT_PRINT(mm_page, mm_page_pcpu_drain,
 		__entry->order, __entry->migratetype)
 );
 
+TRACE_EVENT(mm_page_alloc_fail,
+
+	TP_PROTO(int alloc_order),
+
+	TP_ARGS(alloc_order),
+
+	TP_STRUCT__entry(
+		__field(int, alloc_order)
+	),
+
+	TP_fast_assign(
+		__entry->alloc_order		= alloc_order;
+	),
+
+	TP_printk("alloc_order=%d pageblock_order=%d",
+		__entry->alloc_order,
+		pageblock_order)
+);
+
 TRACE_EVENT(mm_page_alloc_extfrag,
 
 	TP_PROTO(struct page *page,
-		int alloc_order, int fallback_order,
-		int alloc_migratetype, int fallback_migratetype),
+			int alloc_order, int fallback_order,
+			int alloc_migratetype, int fallback_migratetype),
 
 	TP_ARGS(page,
 		alloc_order, fallback_order,
@@ -280,7 +332,6 @@ TRACE_EVENT(mm_page_alloc_extfrag,
 		__field(	int,		fallback_order		)
 		__field(	int,		alloc_migratetype	)
 		__field(	int,		fallback_migratetype	)
-		__field(	int,		change_ownership	)
 	),
 
 	TP_fast_assign(
@@ -289,8 +340,6 @@ TRACE_EVENT(mm_page_alloc_extfrag,
 		__entry->fallback_order		= fallback_order;
 		__entry->alloc_migratetype	= alloc_migratetype;
 		__entry->fallback_migratetype	= fallback_migratetype;
-		__entry->change_ownership	= (alloc_migratetype ==
-					get_pageblock_migratetype(page));
 	),
 
 	TP_printk("page=%p pfn=%lu alloc_order=%d fallback_order=%d pageblock_order=%d alloc_migratetype=%d fallback_migratetype=%d fragmenting=%d change_ownership=%d",
@@ -302,7 +351,7 @@ TRACE_EVENT(mm_page_alloc_extfrag,
 		__entry->alloc_migratetype,
 		__entry->fallback_migratetype,
 		__entry->fallback_order < pageblock_order,
-		__entry->change_ownership)
+		__entry->alloc_migratetype == __entry->fallback_migratetype)
 );
 
 

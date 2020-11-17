@@ -42,7 +42,6 @@ int kthread_should_stop(void);
 bool kthread_freezable_should_stop(bool *was_frozen);
 void *kthread_data(struct task_struct *k);
 
-bool kthread_should_stop(void);
 bool kthread_should_park(void);
 int kthread_park(struct task_struct *k);
 void kthread_unpark(struct task_struct *k);
