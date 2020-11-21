@@ -613,7 +613,7 @@ static int qdss_bind_config(struct usb_configuration *c, const char *name)
 
 	spin_lock_irqsave(&d_lock, flags);
 	list_for_each_entry(ch, &usb_qdss_ch_list, list) {
-		if (strcmp(name, ch->name) == 0) {
+		if (!strcmp(name, ch->name)) {
 			found = 1;
 			break;
 		}
@@ -644,7 +644,7 @@ static int qdss_bind_config(struct usb_configuration *c, const char *name)
 	spin_unlock_irqrestore(&d_lock, flags);
 	qdss->cdev = c->cdev;
 	qdss->function.name = name;
-	qdss->function.descriptors = qdss_hs_desc;
+	qdss->function.fs_descriptors = qdss_hs_desc;
 	qdss->function.hs_descriptors = qdss_hs_desc;
 	qdss->function.strings = qdss_strings;
 	qdss->function.bind = qdss_bind;
@@ -775,7 +775,7 @@ struct usb_qdss_ch *usb_qdss_open(const char *name, void *priv,
 	spin_lock_irqsave(&d_lock, flags);
 	/* Check if we already have a channel with this name */
 	list_for_each_entry(ch, &usb_qdss_ch_list, list) {
-		if (strcmp(name, ch->name) == 0) {
+		if (!strcmp(name, ch->name)) {
 			found = 1;
 			break;
 		}
